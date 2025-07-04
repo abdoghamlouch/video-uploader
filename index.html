@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>YouTube Multi-Video Uploader</title>
+  <script src="https://apis.google.com/js/api.js"></script>
+  <script src="config.js"></script>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 2em auto; padding: 0 1em; }
+    h1 { text-align: center; margin-bottom: 1em; }
+    button, input[type=file] { width: 100%; margin-top: .75em; padding: .75em; font-size: 1em; }
+    #status { margin-top: 1.5em; color: #333; }
+    .file-item { margin-top: 1em; }
+    .file-name { font-weight: bold; }
+    progress { width: 100%; height: 1em; margin-top: .5em; }
+    .file-link { display: block; margin-top: .5em; color: #1a73e8; text-decoration: none; }
+    .file-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>YouTube Multi-Video Uploader</h1>
+
+  <button id="authorize">Sign in with Google</button>
+  <input type="file" id="videos" accept="video/*" multiple disabled />
+  <button id="upload" disabled>Upload Selected Videos</button>
+
+  <div id="status"></div>
+
+  <script>
+    const { clientId } = APP_CONFIG;
+    const SCOPES = 'https://www.googleapis.com/auth/youtube.upload';
+    let GoogleAuth;
+
+    function updateUI(signedIn) {
+      document.getElementById('authorize').textContent = signedIn ? 'Signed in ✔️' : 'Sign in with Google';
+      document.getElementById('videos').disabled = !signedIn;
+      document.getElementById('upload').disabled = !signedIn;
+    }
+
+    function initClient() {
+      gapi.client.init({
+        clientId,
+        scope: SCOPES,
+        discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest']
+      }).then(() => {
+        GoogleAuth = gapi.auth2.getAuthInstance();
+        GoogleAuth.isSignedIn.listen(updateUI);
+        updateUI(GoogleAuth.isSignedIn.get());
+        document.getElementById('authorize').onclick = () => GoogleAuth.signIn();
+        document.getElementById('upload').onclick = uploadSelectedVideos;
+      });
+    }
+
+    function handleClientLoad() {
+      gapi.load('client:auth2', initClient);
+    }
+
+    async function uploadSelectedVideos() {
+      const files = document.getElementById('videos').files;
+      const status = document.getElementById('status');
+      status.innerHTML = '';
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        const name = document.createElement('span');
+        name.className = 'file-name';
+        name.textContent = `Uploading (${i+1}/${files.length}): ${file.name}`;
+        const bar = document.createElement('progress');
+        bar.max = 100;
+        bar.value = 0;
+        const link = document.createElement('a');
+        link.className = 'file-link';
+        item.append(name, bar, link);
+        status.append(item);
+
+        // Build multipart payload
+        const metadata = {
+          snippet: { title: file.name, description: 'Uploaded via Web Uploader' },
+          status: { privacyStatus: 'unlisted' }
+        };
+        const boundary = '-------314159265358979323846';
+        const delimiter = `\r\n--${boundary}\r\n`;
+        const closeDelim = `\r\n--${boundary}--`;
+
+        // Read file
+        const reader = new FileReader();
+        await new Promise(res => { reader.onload = res; reader.readAsDataURL(file); });
+        const base64 = reader.result.split(',')[1];
+        const head = new Blob([
+          delimiter,
+          'Content-Type: application/json; charset=UTF-8\r\n\r\n',
+          JSON.stringify(metadata),
+          delimiter,
+          `Content-Type: ${file.type}\r\n\r\n`
+        ]);
+        const tail = new Blob([closeDelim]);
+        const blob = new Blob([head, file, tail]);
+
+        // Send via XHR to show progress
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST',
+          'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=multipart&part=snippet,status',
+          true);
+        xhr.setRequestHeader('Authorization',
+          'Bearer ' + GoogleAuth.currentUser.get().getAuthResponse().access_token);
+        xhr.setRequestHeader('Content-Type', `multipart/related; boundary=${boundary}`);
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) bar.value = (e.loaded / e.total) * 100;
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            const res = JSON.parse(xhr.responseText);
+            name.textContent = `Uploaded: ${file.name}`;
+            link.href = `https://youtu.be/${res.id}`;
+            link.textContent = 'Watch on YouTube';
+          } else {
+            name.textContent = `Failed: ${file.name}`;
+            link.textContent = `Error ${xhr.status}`;
+          }
+        };
+        xhr.onerror = () => {
+          name.textContent = `Network error: ${file.name}`;
+        };
+        xhr.send(blob);
+      }
+    }
+
+    // Initialize
+    handleClientLoad();
+  </script>
+</body>
+</html>
